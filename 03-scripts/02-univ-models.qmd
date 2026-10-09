@@ -1,0 +1,225 @@
+---
+title: "02-univ-models"
+format: html
+editor: visual
+---
+
+## 0. Setup
+
+### Load packages
+
+```{r}
+library(rstan)
+library(ctsem)
+library(tidybayes)
+library(furrr)
+library(tidyverse)
+library(lubridate)
+```
+
+### Set up functions
+
+```{r}
+#function for running univariate models----------------------------------------
+model_fun <- function(sid, sample, domain){
+  
+  filestr <- paste0(c(sample, sid, domain), collapse = "-")
+  load(
+    file = paste0(
+      "../02-data/02-clean-data/univ-facets/rdata/",filestr, ".RData"
+    )
+  )
+  print(filestr)
+  # initial mean 
+  m_pers <- x %>% pull(score) %>% mean(., na.rm = T)
+  #cint_ind <- paste0("mu_x | 2.5*param+", m_pers) # NEW
+  model_1 <- ctModel(
+    type = "stanct"
+    , manifestNames = c("score")
+    , latentNames   = c("X")
+    , LAMBDA        = matrix(c(1), nrow = 1, byrow = T)
+    , DRIFT         = matrix(c("beta_x"), nrow = 1, byrow = T)
+    #set cts intercept
+    , CINT          = matrix(c("mu_x"), nrow = 1, byrow = T)
+    , T0MEANS       = matrix(c(mean(m_pers, na.rm = T)))
+    #basically, keep error term w/in a certain range
+    , DIFFUSION     = matrix(c("sigma_x | 2.5*param + 1.5"), nrow = 1, byrow = T) 
+    , id            = "SID"
+    , time          = "time"
+  )
+  
+  # ctModelLatex(m)
+  
+  # run the model
+  
+  model_1$pars$indvarying <- FALSE
+  fit <- ctStanFit(data = x, model_1,priors=T,optimize=F)
+  
+  save(fit, file = sprintf("../04-results/univ-facets/models/%s.RData", filestr))
+  
+  # estimate attractor locations from posterior
+  sum_fun <- function(x){
+    inter <- quantile(x, probs = c(.025, .5, .975))
+    tibble(
+      parameter = "location"
+      , mean = mean(x)
+      , sd = sd(x)
+      , lower = inter[1]
+      , mid = inter[2]
+      , upper = inter[3]
+    )
+  }
+  
+  samples <- ctExtract(fit)$popmeans
+  colnames(samples) <- rownames(summary(fit)$popmeans)
+  loc <- sum_fun(-1*samples[,"mu_x"]/samples[,"beta_x"])
+  
+  # save key params
+  fx <- summary(fit)$popmeans %>%
+    data.frame() %>%
+    setNames(c("mean", "sd", "lower", "mid", "upper","n_eff","rhat")) %>%
+    rownames_to_column("parameter") %>%
+    full_join(loc)
+  # save(fx, file = sprintf("../04-results/univ/fx/%s.RData",filestr))  
+  save(fx, file = sprintf("../04-results/univ-facets/fx/%s.RData",filestr))
+}
+```
+
+## 01. Run the models
+
+Un-comment to run the models - remains commented for now to avoid accidentally running as it is very resource intensive!
+
+```{r}
+# tibble(file = list.files("../02-data/02-clean-data/univ/rdata/")) %>%
+#   separate(file, c("sample", "SID", "domain"), sep = "-") %>%
+#   mutate(
+#     domain= str_remove_all(domain, ".RData")
+#     , model = "univ") %>%
+#   mutate(run =
+#            pmap(
+#              list(SID, sample, domain)
+#              , possibly(model_fun, NA_real_)
+#            ))
+```
+
+## 02. Process model results
+
+### Import the model results + central traits
+
+#### Helper function for importing model results
+
+```{r}
+#function for importing univ models
+import_fx = function(sample,sid,domain){
+  filestr <- paste0(c(sample, sid, domain), collapse = "-")
+
+  load(
+    file = paste0(
+      "../04-results/univ/fx/"
+      , filestr
+      , ".RData"
+    ))
+  print(filestr)
+  return(fx)
+}
+```
+
+#### Import the data
+
+```{r}
+traits = read_csv("../02-data/02-clean-data/traits/central-traits-scored-poles.csv") %>%
+  unique()
+
+#import central traits data + n observations per person
+auxdat0 = read_csv('../02-data/02-clean-data/subj-lvl-data.csv') %>%
+  unique() %>%
+  select(-is_central)
+
+auxdat = auxdat0 %>%
+  merge(traits,by=c('sample','SID','domain'))
+```
+
+```{r include=FALSE}
+all_univ.names = tibble(file = list.files("../04-results/univ/fx/")) %>%
+  separate(file, c("sample", "SID", "domain"), sep = "-") %>%
+  mutate(
+    domain= str_remove_all(domain, ".RData")
+    , model = "RQ1")
+
+all_univ.imp = all_univ.names %>%
+  mutate(fx = pmap(list(sample,SID,domain),possibly(import_fx,NA_real_)))
+
+all_univ = all_univ.imp %>%
+  unnest(cols = c(fx)) %>%
+  mutate(sample = tolower(sample)) %>%
+  mutate(domain = plyr::mapvalues(domain,c('E','A','C','N','O'), c('EXT','AGR','CON','NEU','OPE'))) %>%
+  #we lost one person from SC in this step who didn't have CTs
+  merge(auxdat,by=c('sample','SID','domain')) %>%
+  mutate(domain = factor(domain,c("EXT",'AGR',"CON","NEU","OPE"))) %>%
+  filter(!(SID %in% c('628','1256_B','18975')))
+
+#save out the data w/o initial exclusions applied
+write_csv(all_univ, "../02-data/02-clean-data/all-univ-and-traits-merged.csv")
+```
+
+### Apply exclusions based on attractor model results
+
+```{r}
+all.univ00 = read_csv("../02-data/02-clean-data/all-univ-and-traits-merged.csv")
+
+```
+
+```{r}
+all.univ0 = all.univ00 %>%
+  #identify models w/ parameters that fail our exclusions
+  mutate(drop_param = case_when(
+    parameter == 'location' & mean < 0 ~ 1,
+    parameter == 'location' & mean > 10 ~ 1,
+    parameter == 'beta_x' & mean > 0 ~ 1,
+    parameter == 'mu_x' & sd > 10 ~ 1,
+    parameter == 'beta_x' & sd > 10 ~ 1,
+    .default = 0
+  )) %>%
+  #identify models where any parameter fails our exclusions
+  group_by(sample,SID,domain) %>%
+  mutate(drop_strict = as.numeric(any(drop_param == 1))) %>%
+  ungroup() 
+```
+
+### Set up "strict" + "chill" versions of the data, then export
+
+Strict = exclude models where ANY of our exclusions apply; Chill = exclude just the parameters for which exclusions apply
+
+```{r}
+all.univ.strict = all.univ0 %>%
+  filter(drop_strict == 0) %>%
+  mutate(version = 'strict') %>%
+  group_by(version) %>%
+  nest()
+
+all.univ.chill = all.univ0 %>%
+  filter(drop_param == 0) %>%
+  mutate(version = 'chill') %>%
+  group_by(version) %>%
+  nest() 
+
+#combine together and apply final wrangling
+all.univ = rbind(all.univ.strict,all.univ.chill) %>%
+  mutate(data = map(data, ~.x %>%
+                      filter(parameter %in% c('beta_x','location')) %>%
+                      mutate(parameter = str_replace(parameter,'beta_x','strength')) %>%
+                      select(sample,SID,domain,parameter,mean,sd,is_central,ct_high,ct_low,n_obs) %>%
+                      pivot_wider(names_from=parameter,values_from=c(mean,sd)) %>%
+                      mutate(se_strength = sd_strength/sqrt(n_obs),
+                             se_location = sd_location/sqrt(n_obs)) %>%
+                      pivot_longer(-c(sample,SID,domain,is_central,ct_high,ct_low,n_obs),
+                                   names_to=c('stat','parameter'),
+                                   values_to='value',names_sep='_') %>%
+                      pivot_wider(names_from=stat,values_from=value) %>%
+                      mutate(domain = as.character(domain)) )) %>%
+  unnest(cols = c(data)) %>%
+  mutate(vi = sd^2)
+
+#export fully pre-processed version of the data
+write_csv(all.univ,"../02-data/02-clean-data/all-univ-and-traits-merged-CLEAN.csv")
+```

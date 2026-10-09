@@ -1,0 +1,231 @@
+---
+title: "00-prep-traits"
+format: html
+editor: visual
+---
+
+Note:
+
+This file makes use of data containing open-ended responses that we do not have permission to share publicly. Open-ended data are available upon request.
+
+## 0. Setup
+
+```{r}
+library(tidyverse)
+```
+
+### Import data
+
+#### Read in + process traits from prev. paper
+
+```{r}
+#trait codes from the content paper
+# p1.raw= readxl::read_xlsx("../02-data/01-raw-data/coded-traits-PRIVATE.xlsx",sheet='full') 
+
+```
+
+#### Map PAIRS ids onto anonymous ones
+
+```{r}
+# pairs.idkey = read_csv("../02-data/01-raw-data/pairs-idkey.csv") %>%
+#   rename(SID = subject, ID = new_id)
+# pairs0 = p1.raw %>%
+#   filter(sample == 'sample1')  %>%
+#   merge(pairs.idkey,by='ID') %>%
+#   select(-ID)
+# pairs = pairs0 %>%
+#   select(SID,unique_id,domain,standing,trait_name.sp,facet,inBFI,inB5) %>%
+#   rename(trait_name = trait_name.sp) %>%
+#   mutate(sample = 'pairs')
+
+```
+
+#### Prep Sample 2 data
+
+```{r}
+# dt = p1.raw %>%
+#   filter(sample == 's4') %>%
+#   select(ID,unique_id,domain,standing,trait_name.sp,facet,inBFI,inB5) %>%
+#   rename(SID = ID, trait_name = trait_name.sp) %>%
+#   mutate(sample = 'dt') %>%
+#   mutate(chosen = str_extract(unique_id,"[:digit:]$")) %>%
+#   filter(chosen == 1) %>%
+#   select(-chosen)
+```
+
+#### prep samples 3-5
+
+```{r}
+# newdat0 = read_csv("../02-data/01-raw-data/s3to5-traits-pseudocoded.csv")
+# newdat = newdat0 %>%
+#   select(sample,SID,unique_id,domain,trait_name.st,standing,facet,inBFI,inB5) %>%
+#   rename(trait_name = trait_name.st) 
+# 
+# write_csv(newdat,"../02-data/02-clean-data/traits/full-traits-info-not-anon.csv")
+```
+
+#### Merge together
+
+```{r}
+# all_traits0 = rbind(pairs,dt,newdat)
+# 
+# all_traits = all_traits0 %>%
+#   select(sample,unique_id,SID,domain,standing) %>%
+#   mutate(new_dmn=case_when(
+#     domain %in% c('Extraversion','Agreeableness','Conscientiousness','Neuroticism','Openness') ~ toupper(str_extract(domain,"^[:alpha:]{3}")),
+#     .default = NA
+#   )) %>%
+#   mutate(standing = case_when(
+#     domain == 'NEU' & standing == 'high' ~  'low',
+#     domain == 'NEU' & standing == 'low' ~ 'high',
+#     .default = standing
+#   ))
+
+```
+
+#### Quick descriptives + sanity check
+
+```{r}
+# all_traits.not_anon = all_traits0 %>%
+#     select(sample,unique_id,SID,trait_name,domain,standing) %>%
+#   mutate(new_dmn=case_when(
+#     domain %in% c('Extraversion','Agreeableness','Conscientiousness','Neuroticism','Openness') ~ toupper(str_extract(domain,"^[:alpha:]{3}")),
+#     .default = NA
+#   )) %>%
+#   mutate(standing = case_when(
+#     domain == 'NEU' & standing == 'high' ~  'low',
+#     domain == 'NEU' & standing == 'low' ~ 'high',
+#     .default = standing
+#   ))
+# 
+# tmp = all_traits.not_anon %>%
+#   select(sample,SID,trait_name,domain,new_dmn,standing) %>%
+#   filter(!is.na(new_dmn)) %>%
+#   filter(new_dmn=='NEU')
+```
+
+## 01. Set up is_central coding
+
+### Main analyses: any trait in the domain = is_central
+
+```{r}
+# is_central = all_traits %>%
+#   filter(standing != 'none' & !(is.na(new_dmn))) %>%
+#   select(sample,unique_id,SID,new_dmn) %>%
+#   unique() %>%
+#   mutate(is_central = 1) %>%
+#   pivot_wider(names_from=new_dmn,values_from=is_central,values_fill=0) %>%
+#   pivot_longer(-c(sample,SID,unique_id),names_to='domain',values_to='is_central') 
+```
+
+```{r}
+# is_central2 = is_central %>%
+#   select(sample,SID,domain,is_central) %>%
+#   unique() %>%
+#   group_by(sample,SID,domain) %>%
+#   slice_max(is_central) %>%
+#   ungroup()
+# 
+# #check for duplicates
+# test = is_central2 %>%
+#   group_by(sample,SID,domain) %>%
+#   tally()
+```
+
+### Alt analyses: separately considering high and low
+
+#### High
+
+```{r}
+# ct_high = all_traits %>%
+#   select(sample,unique_id,SID,new_dmn,standing) %>%
+#   unique() %>%
+#   filter(!is.na(new_dmn) & standing == 'high') %>%
+#   select(-standing) %>%
+#   mutate(is_central = 1) %>%
+#   pivot_wider(names_from=new_dmn,values_from=is_central,values_fill=0) %>%
+#   pivot_longer(-c(sample,SID,unique_id),names_to='domain',values_to='is_central')
+```
+
+```{r}
+# ct_high2 = ct_high %>%
+#   select(sample,SID,domain,is_central) %>%
+#   unique() %>%
+#   group_by(sample,SID,domain) %>%
+#   slice_max(is_central) %>%
+#   ungroup() %>%
+#   rename(ct_high=is_central)
+# 
+# #make sure there are no duplicates
+# test = ct_high2 %>%
+#   group_by(sample,SID,domain) %>%
+#   tally()
+```
+
+#### Low
+
+```{r}
+# ct_low = all_traits %>%
+#   select(sample,unique_id,SID,new_dmn,standing) %>%
+#   unique() %>%
+#   filter(!is.na(new_dmn) & standing == 'low') %>%
+#   select(-standing) %>%
+#   mutate(is_central = 1) %>%
+#   pivot_wider(names_from=new_dmn,values_from=is_central,values_fill=0) %>%
+#   pivot_longer(-c(sample,SID,unique_id),names_to='domain',values_to='is_central')
+```
+
+```{r}
+# ct_low2 = ct_low %>%
+#   select(sample,SID,domain,is_central) %>%
+#   unique() %>%
+#   group_by(sample,SID,domain) %>%
+#   slice_max(is_central) %>%
+#   ungroup() %>%
+#   rename(ct_low=is_central)
+# 
+# #make sure there are no duplicates
+# test = ct_low2 %>%
+#   group_by(sample,SID,domain) %>%
+#   tally()
+```
+
+### Put everything together
+
+```{r}
+# crossed_traits = crossing(
+#   sample = unique(is_central$sample),
+#   SID = unique(is_central$SID),
+#  domain = c('EXT','AGR','CON','NEU','OPE')
+# )
+```
+
+```{r}
+# all_trait_info = crossed_traits %>%
+#     left_join(is_central2) %>%
+#   left_join(ct_high2) %>%
+#   left_join(ct_low2) %>%
+#   mutate(across(c(is_central,ct_high,ct_low),~ifelse(is.na(.x),0,.x))) %>%
+#   #anyone who had traits at both high and low poles? 3 people -- just set all to zero 
+#   mutate(test = as.numeric(ct_high==1 & ct_low==1)) %>%
+# 
+#   #anyone who somehow had is_central but not for high vs low? -- nobody had this
+#   mutate(test2 = as.numeric(is_central==1 & ct_low != 1 & ct_high != 1)) 
+# 
+# #59 people across samples who had both high and low for the same domain
+# test = all_trait_info %>%
+#   filter(test == 1) %>%
+#   select(sample,SID,domain) %>%
+#   unique()
+# 
+# 
+# all_trait_info2 = all_trait_info %>%
+#   mutate(across(c(ct_high,ct_low), ~ifelse(ct_high==1 & ct_low==1, 0, .x))) %>%
+#   select(-test,-test2)
+
+
+```
+
+```{r}
+# write_csv(all_trait_info2,"../02-data/02-clean-data/traits/central-traits-scored-poles.csv")
+```

@@ -1,0 +1,427 @@
+---
+title: "04-meta-analysis"
+format: html
+editor: visual
+---
+
+## 00. Set-up
+
+```{r include=FALSE}
+library(tidyverse)
+library(metafor)
+library(broom.mixed)
+```
+
+### Helper functions v2
+
+```{r}
+run_mv = function(data,analysis,rq,version,sample=NULL,parameter,mods=NULL,ran_version){
+  
+  ran_eff = if(ran_version == 'crossed'){list(~ 1|domain,~ 1|SID/es.id)}else{as.formula(ran)}
+  
+  if(analysis == 'base'){
+
+  }
+  
+}
+
+
+load("C:/Users/eliza/Box/02-research/01-projects/01-central-traits/04-attractors/04-results/metaregressions/2B/models/chill-cpe-location.RData")
+```
+
+### Helper functions
+
+```{r}
+get_hetero.mv = function(m,ran_struc){
+  
+  
+  if(ran_struc == ''){
+    
+  }
+}
+
+#function for running the between-person models
+run_ma = function(data,analysis,rq,version,sample,parameter,domain,mods=NULL){
+  
+  
+  if(analysis=='base'){
+    model = rma(
+      yi = yi,
+      sei = sd,
+      data = data,
+      control=list(stepadj=0.25, maxiter=5000)
+    )
+  }
+  else{
+    mods = as.formula(mods)
+    
+    model = rma(
+      yi = yi,
+      sei = sd,
+      data = data,
+      mods = mods,
+      control=list(stepadj=0.25, maxiter=5000)
+    )
+  }
+  
+  #save the model
+  save(model, file = sprintf("../04-results/metaregressions/%s/models/%s-%s-%s-%s.RData", rq,version,sample,domain, parameter))
+  
+  #save the tidied up model parameters + heterogeneity
+  tau2 = model$tau2
+  i2 = model$I2
+  
+  fx = broom::tidy(model,conf.int=T) %>%
+    mutate(tau2=tau2,i2=i2)
+  save(fx, file = sprintf("../04-results/metaregressions/%s/fx/%s-%s-%s-%s.RData", rq,version,sample,domain, parameter)) 
+  
+}
+
+
+#function for running the within-person models
+run_mv = function(data,analysis,rq,version,sample,parameter,mods=NULL){
+  
+  if(analysis == 'base'){
+    
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,random = list(~ 1|domain,~ 1|SID/es.id)
+      ,data = data
+)
+  }
+  else{
+    mods = as.formula(mods)
+    
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,mods = mods
+      ,random = list(~ 1|domain,~ 1|SID/es.id)
+      ,data = data
+)
+  }
+  
+    #save the model
+  save(model, file = sprintf("../04-results/metaregressions/%s/models/%s-%s-%s.RData", rq,version,sample, parameter))
+  
+  #save the tidy version + heterogeneity estimates
+  
+  het = tibble(
+    model$s.names,
+    model$sigma2
+  ) %>%
+    t() %>%
+    data.frame() %>%
+    janitor::row_to_names(row_number=1) %>%
+    rename_with(~paste0('sig2_',.x)) %>%
+    mutate(across(everything(),as.numeric))
+  
+  rownames(het) = NULL
+  
+  fx = broom::tidy(model,conf.int=T) %>%
+    bind_cols(het)
+  
+save(fx, file = sprintf("../04-results/metaregressions/%s/fx/%s-%s-%s.RData", rq,version,sample,parameter)) 
+
+}
+
+
+#function for running the within-person models -- alternative random effects structure (no domain)
+run_mv.no_dmn = function(data,analysis,rq,version,sample,parameter,mods=NULL){
+  
+  if(analysis == 'base'){
+    
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,random = ~ 1|SID/es.id
+      ,data = data
+)
+  }
+  else{
+    mods = as.formula(mods)
+    
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,mods = mods
+      ,random = ~ 1|SID/es.id
+      ,data = data
+)
+  }
+  
+    #save the model
+  save(model, file = sprintf("../04-results/metaregressions/%s/models/%s-%s-%s-alt.RData", rq,version,sample, parameter))
+  
+  #save the tidy version + heterogeneity estimates
+  sig_sid = model$sigma2[1]
+  sig_res = model$sigma2[2]
+  
+  fx = broom::tidy(model,conf.int=T) %>%
+    mutate(sig_sid=sig_sid,sig_res=sig_res)
+  
+save(fx, file = sprintf("../04-results/metaregressions/%s/fx/%s-%s-%s-alt.RData", rq,version,sample,parameter)) 
+
+}
+```
+
+### Import data
+
+```{r include=FALSE}
+attr0 = read_csv("../02-data/02-clean-data/all-univ-and-traits-merged-CLEAN.csv") %>%
+  rename(yi=mean)
+```
+
+## 01. Between-person models (trait-by-trait)
+
+### Set up the nested data frame
+
+```{r}
+bp.nest = attr0 %>%
+  group_by(version,sample,parameter,domain) %>%
+  nest()
+
+bp.crossing = crossing(
+  version = unique(bp.nest$version)
+  ,sample = unique(bp.nest$sample)
+  ,parameter = unique(bp.nest$parameter)
+  ,domain = unique(bp.nest$domain)
+  ,analysis = c('base','is_central','is_central-pos')
+)
+
+bp.models = bp.nest %>%
+  merge(bp.crossing,by=c('version','sample','domain','parameter')) %>%
+  mutate(rq = plyr::mapvalues(analysis,c('base','is_central','is_central-pos'),c('1A','2A','pos-2A'))) %>%
+  mutate(mod_str = case_when(
+    rq == '1A' ~ '',
+    rq == '2A' ~ '~is_central',
+    rq == 'pos-2A' ~ '~ ct_high + ct_low'
+  )) %>%
+  mutate(ran = '~1|SID/es.id') %>%
+  mutate(data = map(data,~.x %>%
+                    mutate(es.id = row_number()))) 
+```
+
+### Run the models
+
+```{r}
+bp.models %>%
+   mutate(
+     model = pmap(list(data,analysis,rq,version,sample,parameter,domain,mod_str),run_ma)) 
+```
+
+## 02. Within-person models (full profile)
+
+### Set up the data
+
+```{r}
+wp.nest = attr0 %>%
+  group_by(version,sample,parameter) %>%
+  nest() %>%
+  mutate(data = map(data, ~.x %>% mutate(es.id=row_number())))
+
+wp.crossing = crossing(
+  
+  sample = unique(wp.nest$sample)
+  ,version = unique(wp.nest$version)
+  ,parameter = unique(wp.nest$parameter)
+  ,analysis = c('base','is_central','is_central-pos')
+  
+)
+
+wp.models = wp.nest %>%
+  merge(wp.crossing,by=c('sample','version','parameter')) %>%
+  mutate(rq = plyr::mapvalues(analysis,c('base','is_central','is_central-pos'),c('1B','2B','pos-2B'))) %>%
+  mutate(mod_str = case_when(
+    rq == '1B' ~ '',
+    rq == '2B' ~ '~is_central',
+    rq == 'pos-2B' ~ '~ ct_high + ct_low'
+  )) %>%
+  mutate(ran = '~1|SID/es.id') %>%
+  mutate(data = map(data,~.x %>%
+                    mutate(es.id = row_number()))) 
+```
+
+### Run the models
+
+```{r}
+wp.models %>%
+   mutate(
+     model = pmap(list(data,analysis,rq,version,sample,parameter,mod_str),run_mv)) 
+```
+
+## 03. Robustness tests
+
+### Alternative random effects structure
+
+```{r include=FALSE}
+
+```
+
+```{r}
+wp.models %>%
+  mutate(send=pmap(list(data,analysis,rq,version,sample,parameter,mod_str),run_mv.no_dmn))
+
+```
+
+### Full meta-analysis
+
+#### Between-person
+
+##### Function for running the analyses
+
+```{r}
+run_mega.bp = function(d,analysis,rq,version,parameter,domain,mods=NULL){
+  
+  if(analysis == 'base'){
+    
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,random = ~ 1|sample/es.id
+      ,data = d
+    )
+    
+  }else{
+    mods = as.formula(mods)
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,mods = mods
+      ,random = ~ 1|sample/es.id
+      ,data = d
+    )
+    
+  }
+  
+      #save the model
+  save(model, file = sprintf("../04-results/metaregressions/bp-mega/models/%s-%s-%s-%s.RData", rq,version,domain, parameter))
+  
+  #save the tidy version + heterogeneity estimates
+  sig_sample = model$sigma2[1]
+  sig_res = model$sigma2[2]
+  
+  fx = broom::tidy(model,conf.int=T) %>%
+    mutate(sig_sample=sig_sample,sig_res=sig_res)
+  
+  save(fx, file = sprintf("../04-results/metaregressions/bp-mega/fx/%s-%s-%s-%s.RData", rq,version,domain, parameter))
+  
+}
+
+
+```
+
+##### Prep data
+
+```{r}
+bp.mega = attr0 %>%
+  group_by(version,parameter,domain) %>%
+  nest()
+
+bp.mega_crossing = crossing(
+  version = unique(bp.mega$version)
+  ,parameter = unique(bp.mega$parameter)
+  ,domain = unique(bp.mega$domain)
+  ,analysis = c('base','is_central','is_central-pos')
+)
+
+bp.mega_mods = bp.mega %>%
+  merge(bp.mega_crossing,by=c('version','domain','parameter')) %>%
+  mutate(rq = plyr::mapvalues(analysis,c('base','is_central','is_central-pos'),c('1A','2A','pos-2A'))) %>%
+  mutate(mod_str = case_when(
+    rq == '1A' ~ '',
+    rq == '2A' ~ '~is_central',
+    rq == 'pos-2A' ~ '~ ct_high + ct_low'
+  )) %>%
+  mutate(ran = '~1|sample/SID/es.id') %>%
+  mutate(data = map(data,~.x %>%
+                    mutate(es.id = row_number()))) 
+```
+
+```{r}
+bp.mega_mods %>%
+  mutate(send=pmap(list(data,analysis,rq,version,parameter,domain,mod_str),run_mega.bp))
+```
+
+#### Within-person
+
+##### Function for running the analyses
+
+```{r}
+run_mega.wp = function(d,analysis,rq,version,parameter,mods=NULL){
+  
+  if(analysis == 'base'){
+    
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,random = ~ 1|sample/SID/es.id
+      ,data = d
+    )
+    
+  }else{
+    mods = as.formula(mods)
+    model = rma.mv(
+      yi = yi
+      ,V = vi
+      ,mods = mods
+      ,random = ~ 1|sample/SID/es.id
+      ,data = d
+    )
+    
+  }
+  
+      #save the model
+  save(model, file = sprintf("../04-results/metaregressions/wp-mega/models/%s-%s-%s-%s.RData", rq,version, parameter))
+  
+  #save the tidy version + heterogeneity estimates
+  sig_sample = model$sigma2[1]
+  sig_sid = model$sigma2[2]
+  sig_res = model$sigma2[3]
+  
+  fx = broom::tidy(model,conf.int=T) %>%
+    mutate(sig_sample=sig_sample,sig_sid=sig_sid,sig_res=sig_res)
+  
+  save(fx, file = sprintf("../04-results/metaregressions/wp-mega/fx/%s-%s-%s-%s.RData", rq,version,parameter))
+  
+}
+```
+
+##### Prep data
+
+```{r}
+wp.mega = attr0 %>%
+  group_by(version,parameter) %>%
+  nest()
+
+wp.mega_crossing = crossing(
+  version = unique(wp.mega$version)
+  ,parameter = unique(wp.mega$parameter)
+  ,analysis = c('base','is_central','is_central-pos')
+)
+
+wp.mega_mods = wp.mega %>%
+  merge(wp.mega_crossing,by=c('version','parameter')) %>%
+  mutate(rq = plyr::mapvalues(analysis,c('base','is_central','is_central-pos'),c('1B','2B','pos-2B'))) %>%
+  mutate(mod_str = case_when(
+    rq == '1B' ~ '',
+    rq == '2B' ~ '~is_central',
+    rq == 'pos-2B' ~ '~ ct_high + ct_low'
+  )) %>%
+  mutate(data = map(data,~.x %>%
+                    mutate(es.id = row_number()))) 
+```
+
+##### Run the models
+
+```{r}
+test = wp.mega_mods$data[[1]]
+
+mod_test = rma.mv(
+      yi = yi
+      ,V = vi
+      ,random = ~ 1|sample/SID/es.id
+      ,data = test
+    )
+```

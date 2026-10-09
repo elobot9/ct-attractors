@@ -1,0 +1,496 @@
+---
+title: "03-descriptives"
+format: html
+editor: visual
+---
+
+## 00. Setup
+
+```{r}
+library(tidyverse)
+```
+
+### Helper functions
+
+```{r}
+
+clean_names = function(d){
+  d %>%
+    mutate(
+      sample = plyr::mapvalues(sample,
+                               c('pairs','dt','cpe','pp','sc'), 
+                               c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5'
+                               ))
+    ) %>%
+    mutate(domain = factor(domain,c('EXT','AGR','CON','NEU','OPE'))) %>%
+    mutate(sample = factor(sample,c('Sample 1','Sample 2', 'Sample 3', 'Sample 4',
+                                    'Sample 5')))
+}
+
+```
+
+#### Custom theme for plots
+
+```{r include =FALSE}
+library(extrafont)
+loadfonts(device='win')
+
+my_theme2 <- function(){
+  theme_bw() +
+    theme(
+      legend.position = "bottom"
+      , legend.title = element_text(face = "bold", size = rel(1))
+      , legend.text = element_text(face = "italic", size = rel(1))
+      , axis.text = element_text(size = rel(1.1), color = "#262626",family='Corbel')
+      , axis.title = element_text(face = "bold", size = rel(1.2),family='Corbel')
+      , plot.title = element_text(face = "bold", size = rel(1.2), hjust = .5)
+      , plot.subtitle = element_text(face = "italic", size = rel(1.2), hjust = .5)
+      , strip.text = element_text(face = "bold", size = rel(1.1), color = "black",family='Corbel')
+      , strip.background = element_rect(fill = "white",colour='black',size=rel(1.2))
+    )
+}
+
+b5_pal = c('EXT' = '#F07F09',
+           'AGR'= '#9F2936',
+           'CON'= '#1B587C',
+           'NEU'= '#604878',
+           'OPE'='#33CAFF',
+           'No Match'='darkgray')
+
+std_pal = c(
+  'high'= 1,
+  'low'= .5,
+  'both/none'= .25
+)
+```
+
+### Import data
+
+#### Get the processed attractor parameters
+
+```{r}
+attr0 = read_csv("../02-data/02-clean-data/all-univ-and-traits-merged-CLEAN.csv")
+
+attr  = attr0 %>%
+  filter(version == 'chill')
+
+attr_ids = attr %>%
+  select(sample,SID,domain) %>%
+  unique()
+```
+
+#### Get raw ESM + trait data
+
+```{r}
+load('../02-data/02-clean-data/univ/nested_univ.RData')
+
+raw_esm0 = all_nested %>%
+  rename(SID2= SID) %>% 
+  unnest(cols =c(data)) %>% 
+  ungroup() %>%
+  select(-SID2) %>%
+  filter(time > 0) 
+  
+raw_esm = raw_esm0 %>%  
+  #merge w/ attractor IDs to only retain ppl who passed exclusions
+  merge(attr_ids,by=c('sample','SID','domain')) 
+
+# raw_traits = read_csv("../02-data/01-raw-data/all-trait-info.csv") %>%
+#   #wrangle domain names
+#   mutate(domain = case_when(
+#     domain %in% c('ambiguous_traits','non_trait','inHEX','non_BigFew') ~ 'not_B5',
+#     domain %in% c('multi.domain','Interstitial') ~ 'multiple',
+#     .default = str_extract(domain,"^[:alpha:]")
+#   )) %>%
+#   mutate(domain = plyr::mapvalues(domain,c("E","A",'C',"N","O",'multiple','not_B5'),c('EXT','AGR','CON','NEU','OPE','multiple','not_B5'))) %>%
+#   mutate(standing = ifelse(domain %in% c('multiple','not_B5'),'none',standing)) %>%
+#   #merge w/ subset that were included at all, w/o considering specific domains
+#   merge(
+#     select(attr_ids,sample,SID), by=c('sample','SID')
+#   ) 
+```
+
+## 01. Basic descriptives
+
+### Ns passing exclusions, etc
+
+```{r}
+#how many ppl passed our initial ESM-based exclusions?
+ns_esm = raw_esm0 %>%
+  select(sample,domain,SID) %>%
+  unique() %>%
+  group_by(sample,domain) %>%
+  tally()  %>%
+  mutate(version = 'esm.based')
+
+ns_attr = attr0 %>%
+  select(version,sample,domain,parameter,SID) %>%
+  unique() %>%
+  group_by(version,sample,domain,parameter) %>%
+  tally() %>%
+  ungroup() %>%
+  #remove parameter bc ns are identical for strength and location 
+  select(-parameter) %>%
+  unique() %>%
+  mutate(version = paste0('attr.',version))
+  # pivot_wider(names_from=domain,values_from=c(strict,chill),names_vary = 'slowest',values_fill=0)
+
+ns_all = rbind(ns_esm,ns_attr)%>%
+  clean_names() %>%
+  mutate(version = factor(version,c('esm.based','attr.chill','attr.strict'))) %>%
+  arrange(sample,domain,version) %>%
+  pivot_wider(names_from=c(domain,version),values_from=n,
+              values_fill=0,names_vary='slowest')
+```
+
+How many domains complete per person?
+
+```{r}
+n_complete = attr0 %>%
+  select(version,sample,SID,domain) %>%
+  unique() %>%
+  clean_names() %>%
+  group_by(version,sample,SID) %>%
+  mutate(n_complete = n()) %>%
+  ungroup() %>%
+  group_by(version,sample) %>%
+  mutate(mean_complete = mean(n_complete,na.rm=T)) %>%
+  ungroup() %>%
+  select(version,sample,SID,n_complete,mean_complete) %>%
+  unique() %>%
+  group_by(version,sample,n_complete) %>%
+  mutate(n=n()) %>%
+  ungroup() %>%
+  select(version,sample,n_complete,n,mean_complete) %>%
+  unique() %>%
+  mutate(n_complete=paste0(n_complete,'.compl')) %>%
+  pivot_wider(names_from=c(version,n_complete),values_from=c(n,mean_complete))
+```
+
+### ESM means + SDs
+
+```{r}
+pomp <- function(x, mini = 1, maxi = 5) ((x - mini)/(maxi- mini))*10
+
+#get intraindividual means and sds
+esm_means.i = raw_esm %>%
+  group_by(sample,SID,domain) %>%
+  summarise(imean = mean(score,na.rm=T),isd=sd(score,na.rm=T)) 
+
+esm_means = esm_means.i %>%
+  ungroup() %>%
+  clean_names() %>%
+  group_by(sample,domain) %>%
+  summarise(
+    mean.m = mean(imean,na.rm=T)
+    ,sd.m = sd(imean,na.rm=T)
+    ,min.m = min(imean,na.rm=T)
+    ,max.m=max(imean,na.rm=T)
+    ,mean.sd = mean(isd,na.rm=T)
+    ,sd.sd = sd(isd,na.rm=T)
+    ,min.sd = min(isd,na.rm=T)
+    ,max.sd = max(isd,na.rm=T)
+  ) %>%
+  mutate(across(c(mean.m:max.sd),~round(.x,2))) %>%
+  mutate(m.mean_sd = sprintf('%s (%s)',mean.m,sd.m),
+         sd.mean_sd = sprintf('%s (%s)',mean.sd,sd.sd)) %>%
+  select(sample,domain,m.mean_sd,min.m,max.m,sd.mean_sd,min.sd,max.sd)
+
+# write_csv(esm_means,'../04-results/tables/descriptives/suppD1-esm-descriptives.csv')
+```
+
+```{r}
+attr.means = attr %>%
+  clean_names() %>%
+  group_by(sample,domain,parameter) %>%
+  rename(val = mean) %>%
+  summarise(
+    mean=mean(val,na.rm=T)
+    ,sd=sd(val,na.rm=T)
+    ,min=min(val,na.rm=T)
+    ,max=max(val,na.rm=T)
+  ) %>%
+  mutate(across(c(mean:max), ~round(.x,2)))
+
+
+attr.means.tb = attr.means %>%
+  mutate(mean_sd = sprintf('%s (%s)',mean,sd)) %>%
+  select(sample,domain,parameter,mean_sd,min,max) %>%
+  pivot_wider(names_from=parameter,values_from=c(mean_sd,min,max),names_vary = 'slowest') 
+
+# write_csv(attr.means.tb,"../04-results/tables/descriptives/suppD2-attr-descriptives.csv")
+```
+
+#### Combine together
+
+```{r}
+all_means = attr.means.tb %>%
+  inner_join(esm_means)
+```
+
+### Breakdown of trait coding results
+
+```{r include=FALSE}
+scored_traits = read_csv('../02-data/02-clean-data/traits/central-traits-scored-poles.csv') %>%
+  inner_join(attr_ids)
+
+tallies = scored_traits %>%
+  group_by(sample) %>%
+  mutate(n=n_distinct(SID)) %>%
+  ungroup() %>%
+  group_by(sample,domain) %>%
+  mutate(
+    ct = sum(is_central),
+    high = sum(ct_high),
+    low = sum(ct_low)
+  ) %>%
+  select(sample,domain,ct,high,low,n) %>%
+  unique() %>%
+  clean_names()
+
+no_traits = scored_traits %>%
+  select(sample,SID,domain,is_central) %>%
+  group_by(sample,SID) %>%
+  summarise(max=max(is_central)) %>%
+  filter(max == 0) %>%
+  group_by(sample) %>%
+  tally() %>%
+  rename(no_matches=n) %>%
+  mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5'))) %>%
+  arrange(sample)
+
+all_trait_tallies = tallies %>% merge(no_traits,by='sample') %>%
+  select(sample,domain,high,low,ct,no_matches,n) %>%
+  rename(Sample=sample,Domain=domain,`Central (Either)`=ct,
+         `Central (High)`=high,`Central (Low)`=low,`No Matches`=no_matches,`Total N`=n) %>%
+  arrange(Sample,Domain)
+```
+
+#### Figure for main manuscript
+
+```{r}
+no_traits2 = all_trait_tallies %>%
+  select(Sample,Domain,`No Matches`,`Total N`) %>%
+  unique() %>%
+  rename(sample=Sample,domain=Domain,no_match=`No Matches`,n=`Total N`) %>%
+  mutate(pct=(no_match/n)*100) %>%
+  select(sample,pct) %>%
+  mutate(domain='no_match',standing='both/none') %>%
+  unique()
+
+tallies_plt0 = tallies %>%
+  mutate(both=ct-(high+low)) %>%
+  pivot_longer(c(high,low,both),names_to='standing',values_to='count') %>%
+  mutate(standing = ifelse(standing=='both','both/none',standing)) %>%
+  mutate(pct=(count/n)*100) %>%
+  select(sample,domain,standing,pct) %>%
+  bind_rows(no_traits2) %>%
+  mutate(domain=str_replace(domain,'no_match','No Match')) %>%
+  mutate(domain=factor(domain,c('EXT','AGR','CON','NEU','OPE','No Match'))) %>%
+  mutate(standing=factor(standing,c('high','low','both/none')))
+
+```
+
+plotting function
+
+```{r}
+tmp = tallies_plt0 %>% filter(sample =='Sample 1') %>% filter (pct != 0)
+
+tallies_plt = tallies_plt0 %>%
+  filter(pct != 0) %>%
+  ggplot(aes(x=domain,y=pct,fill=domain,alpha=standing)) +
+  geom_bar(position=position_dodge(),stat='identity') +
+  scale_fill_manual(values=b5_pal) +
+  scale_alpha_manual(values=std_pal) +
+  my_theme2() +
+  facet_wrap(~sample) +
+  guides(fill='none') +
+  labs(y='% of participants')
+```
+
+### Export results
+
+```{r}
+desc_list = list(
+  'trait-tallies'=all_trait_tallies
+  ,'mean-scores'=all_means)
+
+writexl::write_xlsx(desc_list,"../04-results/tables/descriptives/all-descriptives.xlsx")
+```
+
+```{r}
+# tmp = raw_traits %>%
+#   #get rid of ambiverts
+#   filter(!(standing == 'none' & !(domain %in% c('multiple','not_B5')))) %>%
+#   #n by sample
+#   group_by(sample) %>%
+#   mutate(sample_n = n()) %>%
+#   ungroup() %>%
+#   #n by domain per sample
+#   group_by(sample,domain) %>%
+#   mutate(dmn_n = n()) %>%
+#   ungroup() %>%
+#   #n by domain and valence per sample
+#   group_by(sample,domain,standing) %>%
+#   mutate(dmn_n.val = n()) %>%
+#   ungroup() %>%
+#   #get unique
+#   select(sample,domain,standing,sample_n,dmn_n,dmn_n.val) %>%
+#   unique() %>%
+#   #percentages
+#   mutate(prop.dmn = (dmn_n/sample_n)*100) %>%
+#   mutate(prop.dmn.val = (dmn_n.val/sample_n)*100) %>%
+#   mutate(sample = factor(sample,levels=c('pairs','dt','pp','cpe','sc'))) %>%
+#   mutate(domain = factor(domain, levels=c('EXT','AGR','CON','NEU','OPE','multiple','not_B5'))) %>%
+#   arrange(sample,domain)
+# 
+# tmp2 = tmp %>%
+#   mutate(sample = plyr::mapvalues(
+#     sample,
+#     c('pairs','dt','pp','cpe','sc'),
+#     c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5')
+#   )) %>%
+#   mutate(across(contains('prop'),~round(.x,2)))
+# 
+# write_csv(tmp2,"../04-results/tables/descriptives/suppTab2-trait-domain-breakdown.csv")
+```
+
+### Correlations between parameters
+
+set up data
+
+```{r}
+attr.nest = attr0 %>%
+  filter(version == 'chill') %>%
+  select(sample,SID,domain,parameter,mean) %>%
+  group_by(sample) %>%
+  nest() 
+```
+
+Functions for creating the correlation matrices
+
+```{r}
+get_cor = function(d){
+  cr = cor(d$location,d$strength, use='pairwise.complete.obs')
+  return(cr)
+}
+
+get_cormat = function(d){
+  #correlations betwen strengths
+  str = d %>%
+    mutate(domain = factor(domain,c('EXT','AGR','CON','NEU','OPE'))) %>%
+        arrange(domain) %>%
+    filter(parameter == 'strength') %>%
+    pivot_wider(names_from=domain,values_from=mean) %>%
+    select(-SID,-parameter) %>%
+    cor(use='pairwise.complete.obs')
+  
+  #correlations between locations
+  loc = d %>%
+    mutate(domain = factor(domain,c('EXT','AGR','CON','NEU','OPE'))) %>%
+        arrange(domain) %>%
+    filter(parameter == 'location') %>%
+    pivot_wider(names_from=domain,values_from=mean) %>%
+    select(-SID,-parameter) %>%
+    cor(use='pairwise.complete.obs')
+  
+  #strength ~ location
+  cross = d %>%
+    mutate(domain = factor(domain,c('EXT','AGR','CON','NEU','OPE'))) %>%
+    arrange(domain) %>%
+    pivot_wider(names_from=parameter,values_from=mean) %>%
+    group_by(domain) %>%
+    nest() %>%
+    mutate(cor = map(data,get_cor)) %>%
+    mutate(cor = unlist(cor))
+  
+  #set up the final correlation matrix
+  cross_diag = cross$cor
+
+  final = str
+  final[upper.tri(final)] <- loc[upper.tri(loc)]
+  diag(final) <- cross_diag
+  
+  final.df = data.frame(final) %>%
+    rownames_to_column() %>%
+    mutate(across(-rowname,~round(.x,2)))
+}
+
+```
+
+Generate the correlation matrices
+
+```{r}
+attr.cormats = attr.nest %>%
+  mutate(cormat = map(data,get_cormat))
+```
+
+Export cormats
+
+```{r}
+cormat.list = list(
+  'cpe' = attr.cormats$cormat[[1]]
+  ,'dt' = attr.cormats$cormat[[2]]
+  ,'pairs' = attr.cormats$cormat[[3]]
+  ,'pp' = attr.cormats$cormat[[4]]
+  ,'sc' = attr.cormats$cormat[[5]]
+)
+writexl::write_xlsx(cormat.list,'../04-results/tables/descriptives/correlation-matrices.xlsx')
+```
+
+## 02. Visualizing variability in attractor parameters (main manuscript)
+
+### Trajectory plots
+
+```{r }
+all.univ.traj = attr %>%
+  filter(parameter %in% c('strength','location')) %>%
+  select(sample,SID,domain,parameter,mean) %>%
+  pivot_wider(names_from='parameter',values_from='mean') %>%
+  clean_names()
+
+traj = all.univ.traj%>%
+  crossing(
+    p_value = seq(0,10, .5)
+  ) %>%
+    filter(location <10) %>%
+  mutate(dp = location + strength*p_value)
+
+traj %>%
+  ggplot(aes(x = p_value, y = dp,colour=domain)) + 
+  geom_hline(
+    aes(yintercept = 0)
+    , linetype = "dashed"
+  ) + 
+  geom_line(
+    aes(group = SID)
+    # ,colour=domain
+    , linewidth = .25
+    , alpha = .5
+  ) +
+  ylim(-10,10) +
+  facet_grid(vars(sample),vars(domain)) +
+  my_theme2() +
+  theme(legend.position = 'none') +
+  scale_colour_manual(values = b5_pal) +
+  labs(x='Level of personality state',y='Change in personality state')
+```
+
+### Within-person variability
+
+```{r}
+attr %>%
+  clean_names() %>%
+    filter(parameter %in% c('strength','location')) %>%
+  select(sample,SID,domain,parameter,mean) %>%
+  filter(parameter == 'location') %>%
+  # filter(mean > -4.5) %>%
+  ggplot(aes(x=domain,y=mean,group=SID)) +
+  geom_point(aes(colour=SID),size=1, position=position_dodge(width=0.1)) +
+  geom_line(aes(colour=SID),linewidth=.1, alpha=0.5, position=position_dodge(width=0.1)) +
+  my_theme2() +
+  theme(legend.position = "none") +
+  facet_wrap(~sample) +
+  labs(title='Individual attractor strength profiles (all participants)')
+
+```

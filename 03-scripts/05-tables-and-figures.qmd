@@ -1,0 +1,690 @@
+---
+title: "05-tables-and-figures"
+format: html
+editor: visual
+---
+
+## 0. Setup
+
+```{r include=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(patchwork)
+library(extrafont)
+loadfonts(device='win')
+```
+
+### Helper functions
+
+#### Importing results files
+
+```{r}
+#function for pulling all of the filenames
+get_filenames = function(rq){
+  dir = sprintf("../04-results/metaregressions/%s/fx/",rq)
+  
+  #between person
+  if(str_detect(rq,'1A')|str_detect(rq,'2A')){
+
+    fnames = tibble(file=list.files(dir)) %>%
+      separate(file,c('version','sample','domain','parameter','ct_ver'),sep="-") %>% mutate(across(everything(),~str_remove(.x,'.RData'))) %>%
+      mutate(rq = rq)
+
+    return(fnames)
+  }
+  #within person
+  else{
+    
+    fnames = tibble(file=list.files(dir)) %>%
+      separate(file,c('version','sample','parameter','ct_ver','ran_ver'),sep="-") %>%
+mutate(across(everything(),~str_remove(.x,'.RData'))) %>%
+      mutate(rq = rq)
+  
+  return(fnames)  
+  }
+}
+
+#function for actually importing the files
+import_fx = function(rq, version, sample,parameter,ct_ver,domain=NULL,ran_ver=NULL){
+  
+  if(str_detect(rq,'1A')|str_detect(rq,'2A')){
+    filestr <- sprintf('../04-results/metaregressions/%s/fx/%s-%s-%s-%s-%s.RData',rq,version,sample,domain,parameter,ct_ver)
+  }
+  #within-person
+  else{
+      filestr <- sprintf("../04-results/metaregressions/%s/fx/%s-%s-%s-%s-%s.RData",rq,version,sample,parameter,ct_ver,ran_ver)
+  }
+  load(filestr)
+  print(filestr)
+  return(fx)
+}
+```
+
+#### Wrangling + cleaning data
+
+```{r}
+basic_tidy = function(data){
+  
+  data %>%
+    mutate(across(where(is.numeric), ~round(.x,2))) %>%
+    mutate(pstar = case_when(
+      p.value >= .05 ~ '',
+      p.value < .05 & p.value >= .01 ~ '*',
+      p.value < .01 & p.value >= .001 ~ '**',
+      p.value < .001 ~ '***'
+    )) %>%
+    mutate(es_ci= sprintf("%s [%s,%s]",estimate,conf.low,conf.high))
+}
+
+clean_names = function(data){
+  
+  data %>%
+    mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),
+                                  c('Sample 1','Sample 2','Sample 3',
+                                    'Sample 4','Sample 5'))) %>%
+    mutate(domain = factor(domain,c('EXT','AGR','CON','NEU','OPE'))) %>%
+    mutate(parameter = str_to_title(parameter))
+}
+```
+
+#### Kables (between-person models)
+
+```{r}
+#kable for 1A
+bp_kbl = function(d,rq,version){
+  
+  head=c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5')
+  subhead=c('Estimate [95% CI]','SE',"&tau;","I<sup>2</sup>")
+  
+  #create the header
+  hdr <- c(1,rep(length(subhead),length(head)))
+  names(hdr) <- c(" ",head)
+  col_names = c("Domain",rep(subhead,length(head)))
+  ncol = 1+(length(subhead)*length(head))
+  
+  #make the table
+  tab = d %>%
+    select(-parameter)%>%
+    kable(
+      "html"
+      ,escape=F
+      ,align = c("r", rep("c", ncol))
+      ,col.names = col_names
+        ) %>%
+    kable_styling(full_width = F, html_font = "Times") %>%
+    add_header_above(hdr)
+  
+  #add the rownames
+    rs <- d %>% 
+    group_by(parameter) %>% 
+    tally() %>% 
+    mutate(end = cumsum(n), start = lag(end) + 1, start = ifelse(is.na(start), 1, start))
+  
+  #add rownames to the table
+    for(i in 1:nrow(rs)){
+    tab <- tab %>% 
+      kableExtra::group_rows(rs$parameter[i], rs$start[i], rs$end[i])
+    }
+  
+  save_kable(tab, file = sprintf("../04-results/tables/%s/%s-table.html", rq,version))  
+    
+  return(tab)
+  
+}
+
+#kable for 2A
+bp_kbl2 = function(d,rq,version,parameter,ct_ver){
+  head=c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5')
+  subhead=c('Estimate [95% CI]','SE',"&tau;","I<sup>2</sup>")
+  
+  #create the header
+  hdr <- c(1,rep(length(subhead),length(head)))
+  names(hdr) <- c(" ",head)
+  col_names = c("Term",rep(subhead,length(head)))
+  ncol = 1+(length(subhead)*length(head))
+  
+  #make the table
+  tab = d %>%
+    select(-domain)%>%
+    kable(
+      "html"
+      ,escape=F
+      ,align = c("r", rep("c", ncol))
+      ,col.names = col_names
+        ) %>%
+    kable_styling(full_width = F, html_font = "Times") %>%
+    add_header_above(hdr)
+  
+  #add the rownames
+    rs <- d %>% 
+    group_by(domain) %>% 
+    tally() %>% 
+    mutate(end = cumsum(n), start = lag(end) + 1, start = ifelse(is.na(start), 1, start))
+  
+  #add rownames to the table
+    for(i in 1:nrow(rs)){
+    tab <- tab %>% 
+      kableExtra::group_rows(rs$domain[i], rs$start[i], rs$end[i])
+    }
+  
+  save_kable(tab, file = sprintf("../04-results/tables/%s/%s-%s-%s-table.html", rq,version,parameter,ct_ver))  
+    
+  return(tab)
+  
+}
+
+```
+
+#### Kables (within-person models)
+
+```{r}
+#kable for 1 B
+wp_kbl = function(d,rq,version,ran_ver){
+  
+  
+  if(ran_ver == 'two_lvl'){
+    col_names = c('Sample','Estimate [95% CI]','SE','&tau;<sub>Between</sub>','&tau;<sub>Within</sub>',"I<sup>2</sup><sub>Between</sub>","I<sup>2</sup><sub>Within</sub>","I<sup>2</sup><sub>Total</sub>")
+    ncol = length(col_names)
+  }
+  if(ran_ver == 'crossed'){
+    col_names = c('Sample','Estimate [95% CI]','SE','&tau;<sub>Domain</sub>','&tau;<sub>Subject</sub>','&tau;<sub>Residual</sub>')
+    ncol= length(col_names)
+  }
+
+  tab = d %>%
+    select(-parameter)%>%
+    kable(
+      "html"
+      ,escape=F
+      ,align = c("r", rep("c", ncol))
+      ,col.names = col_names
+        ) %>%
+    kable_styling(full_width = F, html_font = "Times")
+  
+    #add the rownames
+    rs <- d %>% 
+    group_by(parameter) %>% 
+    tally() %>% 
+    mutate(end = cumsum(n), start = lag(end) + 1, start = ifelse(is.na(start), 1, start))
+  
+    #add rownames to the table
+    for(i in 1:nrow(rs)){
+    tab <- tab %>% 
+      kableExtra::group_rows(rs$parameter[i], rs$start[i], rs$end[i])
+    }
+  
+  save_kable(tab, file = sprintf("../04-results/tables/%s/%s-%s-table.html", rq,version,ran_ver))  
+    
+  return(tab)
+    
+}
+
+#kable for 2B
+wp_kbl2 = function(d,rq,version,parameter,ct_ver,ran_ver){
+  
+  if(ran_ver == 'two_lvl'){
+    col_names = c('Sample','Estimate [95% CI]','SE','&tau;<sub>Between</sub>','&tau;<sub>Within</sub>',"I<sup>2</sup><sub>Between</sub>","I<sup>2</sup><sub>Within</sub>","I<sup>2</sup><sub>Total</sub>")
+    ncol = length(col_names)
+  }
+  if(ran_ver == 'crossed'){
+    col_names = c('Sample','Estimate [95% CI]','SE','&tau;<sub>Domain</sub>','&tau;<sub>Subject</sub>','&tau;<sub>Residual</sub>')
+    ncol= length(col_names)
+  }
+  
+  tab = d %>%
+    select(-sample)%>%
+    kable(
+      "html"
+      ,escape=F
+      ,align = c("r", rep("c", ncol))
+      ,col.names = col_names
+        ) %>%
+    kable_styling(full_width = F, html_font = "Times")
+  
+    #add the rownames
+    rs <- d %>% 
+    group_by(sample) %>% 
+    tally() %>% 
+    mutate(end = cumsum(n), start = lag(end) + 1, start = ifelse(is.na(start), 1, start))
+  
+    #add rownames to the table
+    for(i in 1:nrow(rs)){
+    tab <- tab %>% 
+      kableExtra::group_rows(rs$sample[i], rs$start[i], rs$end[i])
+    }
+  
+  save_kable(tab, file = sprintf("../04-results/tables/%s/%s-%s-%s-%s-table.html", rq,version,parameter,ct_ver,ran_ver))  
+    
+  return(tab)
+    
+}
+```
+
+### Import data
+
+#### Between-person results
+
+```{r include=FALSE}
+#'version','sample','domain','parameter','ct_ver' <-import order
+#rq, version, sample, parameter, ct_version, domain, random <- 
+#rq1A 
+bp.names1 = get_filenames('1A') %>%
+  mutate(fx = pmap(list(rq,version,sample,parameter,ct_ver,domain,''),import_fx))
+
+#rq2A
+bp.names2 = get_filenames('2A') %>%
+    mutate(fx = pmap(list(rq,version,sample,parameter,ct_ver,domain,''),import_fx))
+
+```
+
+#### Within-person results
+
+```{r include=FALSE}
+wp.names1 = get_filenames('1B') %>%
+    mutate(fx = pmap(list(rq,version,sample,parameter,ct_ver,'',ran_ver),import_fx))
+
+wp.names2 = get_filenames('2B') %>%
+    mutate(fx = pmap(list(rq,version,sample,parameter,ct_ver,'',ran_ver),import_fx))
+```
+
+## 02. Tables
+
+### Between person models
+
+#### RQ1A. Between-person heterogeneity
+
+##### Wrangle data
+
+```{r}
+bp1 = bp.names1 %>%
+  select(-ct_ver) %>%
+  clean_names() %>%
+  arrange(version,parameter,sample,domain) %>%
+  mutate(tidy = map(fx,basic_tidy)) %>%
+  select(-fx) %>%
+  mutate(tidy = map(tidy, ~.x %>%
+                      select(es_ci,std.error,tau2,i2))) %>%
+  unnest(cols=c(tidy)) %>%
+  mutate(tau2=round(sqrt(tau2),2)) %>%
+  rename(tau = tau2) %>%
+  group_by(rq,version) %>%
+  nest() %>%
+  mutate(data = map(data, ~.x %>%
+                      pivot_wider(names_from=sample
+                                  ,values_from=c(es_ci,std.error,tau,i2)
+                                  ,names_vary = 'slowest'
+                                  
+                                  ) %>%
+                      select(parameter,domain,everything()) %>%
+                      mutate(across(-domain,~ifelse(is.na(.x),'--',.x)))
+                    ))
+```
+
+##### Export kables
+
+```{r}
+bp1%>%
+  mutate(send=pmap(list(data,rq,version),bp_kbl))
+```
+
+#### RQ2A. Between person x central trait
+
+##### Wrangle the data
+
+```{r}
+bp2 = bp.names2 %>%
+  clean_names() %>%
+  arrange(version,parameter,sample,domain) %>%
+  mutate(tidy = map(fx,basic_tidy)) %>%
+  select(-fx) %>%
+  mutate(tidy = map(tidy, ~.x %>%
+                      mutate(es_ci = paste0(es_ci,pstar)) %>%
+                      mutate(term = case_when(
+                        term == 'intercept' ~ 'Intercept',
+                        term == 'is_central' ~ 'Central',
+                        term == 'ct_high' ~ 'Central (high)',
+                        term == 'ct_low' ~ 'Central (low)'
+                      )) %>%
+                      mutate(tau = round(sqrt(tau2),2)) %>%
+                      select(term,es_ci,std.error,tau,i2) %>%
+                      mutate(tau = ifelse(term == 'Intercept',tau,''),
+                             i2 = ifelse(term=='Intercept',i2,''))
+         )
+  ) %>%
+  unnest(cols=c(tidy)) %>%
+  group_by(rq,version,parameter,ct_ver) %>%
+  nest() %>%
+  mutate(data = map(data, ~.x %>% 
+                      pivot_wider(names_from=sample,
+                                              values_from=c(es_ci,std.error,tau,i2),
+                                              names_vary='slowest'
+                                              ) %>%
+                      mutate(across(-domain,~ifelse(is.na(.x),'--',.x)))
+                    ))
+```
+
+##### Export kables - primary analyses
+
+```{r}
+bp2 %>%
+  mutate(send = pmap(list(data,rq,version,parameter,ct_ver),bp_kbl2))
+```
+
+### Within-person models
+
+#### RQ1B. Within-person heterogeneity
+
+##### Wrangle data
+
+```{r}
+wp1 = wp.names1 %>%
+  mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),
+                                  c('Sample 1','Sample 2','Sample 3',
+                                    'Sample 4','Sample 5'))) %>%
+  mutate(parameter = str_to_title(parameter)) %>%
+  arrange(version,parameter,sample) %>%
+  mutate(tidy=map(fx,basic_tidy)) %>%
+  select(-fx) %>%
+  mutate(tidy=map(tidy, ~.x %>% select(es_ci,std.error,contains('sig'),contains('i2'))))
+```
+
+##### Export kable – primary models
+
+```{r}
+wp1_primary = wp1 %>%
+  filter(ran_ver=='two_lvl') %>%
+  unnest(cols=c(tidy)) %>%
+  select(parameter,sample,everything()) %>%
+  select(-i2_lvl1) %>%
+  rename(I2_within=i2_lvl2, I2_between=i2_lvl3, I2_total=i2_total) %>%
+  mutate(across(contains('sig'),sqrt)) %>%
+  mutate(across(contains('sig'),~round(.x,2))) %>%
+  select(rq,version,ct_ver,ran_ver,parameter,sample,es_ci,std.error,contains('sig'),I2_between,I2_within,I2_total) %>%
+  group_by(rq,version,ct_ver,ran_ver) %>%
+  nest() 
+
+wp1_primary %>%
+  mutate(send=pmap(list(data,rq,version,ran_ver),wp_kbl))
+```
+
+##### Export kable - Supplement F: alternative random effect structure
+
+```{r}
+wp1_crossed = wp1 %>%
+  filter(ran_ver=='crossed') %>%
+  unnest(cols=c(tidy)) %>%
+  mutate(across(contains('sig'),sqrt)) %>%
+  mutate(across(contains('sig'),~round(.x,2))) %>%
+  select(parameter,sample,everything()) %>%
+  group_by(rq,version,ct_ver,ran_ver) %>%
+  nest() 
+
+wp1_crossed %>%
+  mutate(send=pmap(list(data,rq,version,ran_ver),wp_kbl))
+```
+
+#### RQ2B. Within-person heterogeneity x central traits
+
+##### Wrangle the data
+
+```{r}
+wp2 = wp.names2 %>%
+      mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),
+                                  c('Sample 1','Sample 2','Sample 3',
+                                    'Sample 4','Sample 5'))) %>%
+  mutate(parameter = str_to_title(parameter)) %>%
+  arrange(version,parameter,sample) %>%
+  mutate(tidy=map(fx,basic_tidy)) %>%
+  select(-fx) %>%
+    mutate(tidy = map(tidy, ~.x %>%
+                      mutate(es_ci = paste0(es_ci,pstar)) %>%
+                      mutate(term = case_when(
+                        term == 'intercept' ~ 'Intercept',
+                        term == 'is_central' ~ 'Central',
+                        term == 'ct_high' ~ 'Central (high)',
+                        term == 'ct_low' ~ 'Central (low)'
+                      )) %>%
+                      mutate(across(contains('sig'),~round(sqrt(.x),2))) %>%
+                      mutate(across(contains('sig'),~ifelse(term=='Intercept',.x,''))) %>%
+                      mutate(across(contains('i2'),~ifelse(term=='Intercept',.x,''))) %>%
+                      select(term,es_ci,std.error,contains('sig'),contains('i2'))
+
+         )
+    )
+```
+
+##### Export kables - primary analyses
+
+```{r}
+wp2_primary = wp2 %>%
+  filter(ran_ver=='two_lvl') %>%
+  unnest(cols=c(tidy)) %>%
+  select(-i2_lvl1) %>%
+  rename(I2_within=i2_lvl2, I2_between=i2_lvl3, I2_total=i2_total) %>%
+  select(rq,version,parameter,ct_ver,ran_ver,sample,term,es_ci,std.error,contains('sig'),I2_between,I2_within,I2_total) %>%
+  group_by(rq,version,parameter,ct_ver,ran_ver) %>%
+  nest()
+
+wp2_primary %>%
+  mutate(send = pmap(list(data,rq,version,parameter,ct_ver,ran_ver),wp_kbl2))
+```
+
+##### Export kable - Supplement F: alternative random effects structure
+
+```{r}
+wp2_crossed = wp2 %>%
+  filter(ran_ver=='crossed') %>%
+  unnest(cols=c(tidy)) %>%
+  group_by(rq,version,parameter,ct_ver,ran_ver) %>%
+  nest()
+
+wp2_crossed %>%
+  mutate(send = pmap(list(data,rq,version,parameter,ct_ver,ran_ver),wp_kbl2))
+```
+
+## 04. Figures
+
+```{r include=FALSE}
+attr0 = read_csv("../02-data/02-clean-data/all-univ-and-traits-merged-CLEAN.csv") %>%
+  drop_na()
+```
+
+### Figure helper functions + theme
+
+```{r}
+my_theme2 <- function(){
+  theme_bw() +
+    theme(
+      legend.position = "bottom"
+      , legend.title = element_text(face = "bold", size = rel(1))
+      , legend.text = element_text(face = "italic", size = rel(1))
+      , axis.text = element_text(size = rel(1.1), color = "#262626",family='Times New Roman')
+      , axis.title = element_text(face = "bold", size = rel(1.2),family='Times New Roman')
+      , plot.title = element_text(face = "bold", size = rel(1.2), hjust = .5,family='Times New Roman')
+      , plot.subtitle = element_text(face = "italic", size = rel(1.2), hjust = .5)
+      , strip.text = element_text(face = "bold", size = rel(1.1), color = "black",family='Times New Roman')
+      , strip.background = element_rect(fill = "white",colour='black',size=rel(1.2))
+    )
+}
+
+b5_pal = c('EXT' = '#F07F09',
+           'AGR'= '#9F2936',
+           'CON'= '#1B587C',
+           'NEU'= '#604878',
+           'OPE'='#33CAFF')
+```
+
+### RQ1. Heterogeneity in attractor location and strength
+
+```{r include=FALSE}
+attr_clean = read_csv("../02-data/02-clean-data/all-univ-and-traits-merged-CLEAN.csv")
+
+clean_ids = attr_clean %>%
+  select(sample,SID,domain) %>%
+  unique()
+
+attr0 = read_csv("../02-data/02-clean-data/all-univ-and-traits-merged.csv") %>%
+  inner_join(clean_ids)
+
+```
+
+#### Between-person results
+
+```{r}
+for_traj0 = attr0 %>%
+  select(sample,SID,domain,parameter,mean) %>%
+  filter(parameter %in% c('mu_x','beta_x')) %>%
+  pivot_wider(names_from=parameter,values_from=mean) %>%
+  mutate(domain = factor(domain,levels=c('EXT','AGR','CON','NEU','OPE'))) %>%
+  mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5')))
+
+traj = for_traj0%>%
+  crossing(
+    p_value = seq(-5,5, .5)
+  ) %>%
+  filter(mu_x <10) %>%
+  mutate(dp = location + mu_x*p_value) 
+```
+
+```{r}
+traj_plot = traj %>%
+  ggplot(aes(x = p_value, y = dp,colour=domain)) + 
+  geom_hline(
+    aes(yintercept = 0)
+    , linetype = "dashed"
+  ) + 
+  geom_line(
+    aes(group = SID)
+    # ,colour=domain
+    , linewidth = .25
+    , alpha = .5
+  ) +
+  # ylim(-10,10) +
+  facet_grid(vars(sample),vars(domain)) +
+  my_theme2() +
+  theme(legend.position = 'none') +
+  scale_colour_manual(values = b5_pal) +
+  labs(x='Level of personality state',y='Change in personality state')
+```
+
+#### Within-person spaghetti plots
+
+```{r}
+spag_plot = function(d,parameter){
+  
+  d %>%
+    ggplot(aes(x=domain,y=mean,group=SID)) +
+    geom_point(aes(colour=SID),size=1, position=position_dodge(width=0.1)) +
+    geom_line(aes(colour=SID),linewidth=.1, alpha=0.5, position=position_dodge(width=0.1)) +
+      my_theme2() +
+    theme(legend.position = "none") +
+    facet_wrap(~sample,nrow=1)  +
+    labs(title=sprintf('Attractor %s', parameter),y='Estimate',x='Domain')
+  
+}
+```
+
+```{r}
+for_spag = attr_clean %>%
+  filter(version == 'chill') %>%
+  select(sample,domain,SID,parameter,mean) %>%
+  mutate(domain = factor(domain,levels=c('EXT','AGR','CON','NEU','OPE'))) %>%
+  mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5'))) %>%
+  group_by(parameter) %>%
+  nest()
+  
+```
+
+```{r}
+spag_plots = for_spag %>%
+  mutate(plot = pmap(list(data,parameter),spag_plot))
+
+all_spag_plots = spag_plots$plot[[1]] / spag_plots$plot[[2]] + plot_layout(axes='collect')
+```
+
+### RQ2. Central traits
+
+#### Between-person results
+
+##### Prep data
+
+```{r}
+bp2_forplot = bp.names2 %>%
+  filter(version == 'chill' &ct_ver == 'primary') %>%
+  unnest(cols=c(fx)) %>%
+  filter(term=='is_central') %>%
+  select(sample,domain,parameter,estimate,conf.high,conf.low) %>%
+  rename(ci_l=conf.low,ci_u=conf.high) %>%
+    mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5'))) %>%
+  mutate(sample = factor(sample, c('Sample 5','Sample 4','Sample 3','Sample 2','Sample 1'))) %>%
+  mutate(domain = factor(domain, c('EXT','AGR','CON','NEU','OPE'))) %>%
+  arrange(sample,domain) %>%
+  mutate(parameter=str_to_title(parameter))
+```
+
+Function for forest plot
+
+```{r}
+plot_2A = function(d,parameter){
+  d %>%
+  ggplot(aes(x=sample,y=estimate,colour=domain)) +
+  geom_point(stat='identity') +
+  geom_pointrange(aes(ymin = ci_l, ymax = ci_u)) +
+  geom_hline(
+    aes(yintercept = 0)
+    , linetype = "dashed"
+  ) + 
+  facet_wrap(~domain,nrow=1) +
+  my_theme2() +
+  scale_colour_manual(values=b5_pal) +
+  theme(legend.position = 'none') +
+  coord_flip() +
+  labs(title=sprintf('Attractor %s', parameter),y='Estimate',x='Sample')
+}
+```
+
+```{r}
+plots_2a = bp2_forplot %>%
+  group_by(parameter) %>%
+  nest() %>%
+  mutate(plot = pmap(list(data,parameter),plot_2A))
+
+loc_2A = plots_2a$plot[[1]]
+str_2A = plots_2a$plot[[2]]
+
+pl = loc_2A / str_2A + plot_layout(axes='collect')
+```
+
+### Within-person results
+
+#### Prep data
+
+```{r}
+wp2_forplot = wp.names2 %>%
+  filter(version == 'chill' & ct_ver=='standard' & ran_ver=='two_lvl') %>%
+  unnest(cols=c(fx)) %>%
+      mutate(sample = plyr::mapvalues(sample,c('pairs','dt','pp','cpe','sc'),c('Sample 1','Sample 2','Sample 3','Sample 4','Sample 5')))  %>%
+    mutate(sample = factor(sample, c('Sample 5','Sample 4','Sample 3','Sample 2','Sample 1'))) %>%
+  arrange(parameter,sample) %>%
+  filter(term=='is_central') %>%
+  select(sample,parameter,estimate, conf.low,conf.high) %>%
+  rename(ci_l=conf.low,ci_u=conf.high) %>%
+  mutate(parameter=str_to_title(sprintf('Attractor %s',parameter))) %>%
+  rename(Sample=sample,Estimate=estimate)
+```
+
+```{r}
+wp2_plot = wp2_forplot %>%
+  ggplot(aes(x=Sample,y=Estimate,colour=Sample)) +
+  geom_point(stat='identity') +
+  geom_pointrange(aes(ymin = ci_l, ymax = ci_u)) +
+  geom_hline(
+    aes(yintercept = 0)
+    , linetype = "dashed"
+  ) + 
+  facet_wrap(~parameter,nrow=1) +
+  my_theme2() +
+  # scale_colour_manual(values=b5_pal) +
+  theme(legend.position = 'none') +
+  coord_flip()
+```
